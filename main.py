@@ -1,0 +1,1700 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import hashlib
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+STATE_PATH = DATA_DIR / "state.json"
+DEFAULT_TIMEZONE = "Asia/Shanghai"
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+TRANSLATION_CACHE_LOCK = threading.Lock()
+REMOTE_TRANSLATION_ENABLED = os.environ.get("ENABLE_REMOTE_TRANSLATION", "1").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+ENGLISH_OUTPUT_MODE = os.environ.get("ENGLISH_OUTPUT_MODE", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+DEEPL_API_KEY = os.environ.get("DEEPL_API_KEY", "").strip()
+DEEPL_API_URL = os.environ.get("DEEPL_API_URL", "https://api-free.deepl.com/v2/translate")
+
+
+SECTION_TITLES = {
+    "head_releases": "头部发行",
+    "music_news": "音乐资讯动态",
+    "music_ai_industry": "音乐 / AI 产业动向",
+    "holiday_events": "节庆与本地事件",
+    "social_trends": "社媒热点",
+    "culture_art": "文化与艺术界",
+    "politics": "国际政坛",
+    "action_items": "今日重点建议",
+}
+
+
+COUNTRY_NAMES = {
+    "GB": "英国",
+    "FR": "法国",
+    "DE": "德国",
+    "IT": "意大利",
+    "ES": "西班牙",
+    "ID": "印度尼西亚",
+    "PH": "菲律宾",
+    "MY": "马来西亚",
+}
+
+
+HEAD_RELEASE_INCLUDE = [
+    "single",
+    "song",
+    "track",
+    "album",
+    "ep",
+    "lp",
+    "mixtape",
+    "music video",
+    "video",
+    "visual",
+    "teaser",
+    "trailer",
+    "out now",
+    "released",
+    "release",
+    "pre-order",
+    "preorder",
+    "pre-save",
+    "presave",
+    "debut",
+]
+
+HEAD_RELEASE_EXCLUDE = [
+    "financial result",
+    "buyback",
+    "acquire",
+    "acquisition",
+    "deal",
+    "publishing deal",
+    "distribution partnership",
+    "partnership",
+    "appoints",
+    "appointed",
+    "elevated",
+    "evp",
+    "earnings",
+    "podcast",
+    "initiative",
+    "foundation",
+    "school",
+    "conference call",
+    "share buyback",
+    "quarter",
+    "revenue",
+    "investor",
+    "documentary",
+]
+
+HEAD_RELEASE_MEDIA_INCLUDE = [
+    "new album",
+    "album",
+    "single",
+    "new song",
+    "music video",
+    "video",
+    "mv",
+    "visual",
+    "release date",
+    "out now",
+    "drops",
+    "release",
+    "releases",
+    "announces",
+    "coming",
+    "debut",
+    "teaser",
+    "trailer",
+    "pre-save",
+]
+
+HEAD_RELEASE_PRIORITY_ARTISTS = [
+    "sabrina carpenter",
+    "lady gaga",
+    "olivia rodrigo",
+    "doechii",
+    "billie eilish",
+    "dua lipa",
+    "taylor swift",
+    "the weeknd",
+    "bad bunny",
+    "karol g",
+    "drake",
+    "ariana grande",
+    "post malone",
+    "kendrick lamar",
+    "travis scott",
+    "bts",
+    "jennie",
+    "rihanna",
+    "ed sheeran",
+    "coldplay",
+    "shakira",
+    "harry styles",
+    "rosalia",
+    "morgan wallen",
+    "charli xcx",
+    "the strokes",
+    "iceage",
+]
+
+SOCIAL_KEYWORDS = [
+    "meme",
+    "viral",
+    "tiktok",
+    "instagram",
+    "youtube",
+    "challenge",
+    "creator",
+    "trend",
+    "fandom",
+    "stan",
+    "reels",
+    "shorts",
+]
+
+AI_INDUSTRY_KEYWORDS = [
+    "ai",
+    "artificial intelligence",
+    "music tech",
+    "streaming",
+    "subscription",
+    "pricing",
+    "price",
+    "royalty",
+    "rights",
+    "licensing",
+    "audio",
+    "distribution",
+    "platform",
+    "catalog",
+    "startup",
+    "generator",
+]
+
+POLITICS_KEYWORDS = [
+    "president",
+    "prime minister",
+    "election",
+    "congress",
+    "senate",
+    "parliament",
+    "supreme court",
+    "war",
+    "ukraine",
+    "tariff",
+    "immigration",
+    "nato",
+    "white house",
+    "eu",
+]
+
+CULTURE_KEYWORDS = [
+    "film",
+    "movie",
+    "festival",
+    "soccer",
+    "football",
+    "art",
+    "museum",
+    "exhibition",
+    "trailer",
+    "box office",
+]
+
+
+@dataclass(frozen=True)
+class FeedSource:
+    key: str
+    name: str
+    url: str
+    section: str
+    max_age_days: int
+    max_items: int
+    priority: int
+    include_keywords: tuple[str, ...] = ()
+    exclude_keywords: tuple[str, ...] = ()
+
+
+@dataclass
+class NewsItem:
+    source_key: str
+    source_name: str
+    section: str
+    title: str
+    link: str
+    summary: str
+    published_at: datetime | None
+    priority: int
+    tag: str
+    score: float
+    cn_summary: str = ""
+
+
+FEED_SOURCES = [
+    FeedSource(
+        key="sony",
+        name="Sony Music",
+        url="https://www.sonymusic.com/feed/",
+        section="head_releases",
+        max_age_days=2,
+        max_items=3,
+        priority=100,
+        include_keywords=tuple(HEAD_RELEASE_INCLUDE),
+        exclude_keywords=tuple(HEAD_RELEASE_EXCLUDE),
+    ),
+    FeedSource(
+        key="warner",
+        name="Warner Music Group",
+        url="https://www.wmg.com/news/category/press-release/feed/",
+        section="head_releases",
+        max_age_days=3,
+        max_items=3,
+        priority=95,
+        include_keywords=tuple(HEAD_RELEASE_INCLUDE),
+        exclude_keywords=tuple(HEAD_RELEASE_EXCLUDE),
+    ),
+    FeedSource(
+        key="universal",
+        name="Universal Music Group",
+        url="https://www.universalmusic.com/feed/",
+        section="head_releases",
+        max_age_days=3,
+        max_items=3,
+        priority=95,
+        include_keywords=tuple(HEAD_RELEASE_INCLUDE),
+        exclude_keywords=tuple(HEAD_RELEASE_EXCLUDE),
+    ),
+    FeedSource(
+        key="billboard",
+        name="Billboard",
+        url="https://www.billboard.com/feed/",
+        section="music_news",
+        max_age_days=2,
+        max_items=4,
+        priority=90,
+    ),
+    FeedSource(
+        key="billboard_head_release",
+        name="Billboard",
+        url="https://www.billboard.com/feed/",
+        section="head_releases",
+        max_age_days=3,
+        max_items=4,
+        priority=84,
+        include_keywords=tuple(HEAD_RELEASE_MEDIA_INCLUDE),
+        exclude_keywords=tuple(HEAD_RELEASE_EXCLUDE),
+    ),
+    FeedSource(
+        key="rolling_stone",
+        name="Rolling Stone",
+        url="https://www.rollingstone.com/music/music-news/feed/",
+        section="music_news",
+        max_age_days=2,
+        max_items=3,
+        priority=88,
+    ),
+    FeedSource(
+        key="rolling_stone_head_release",
+        name="Rolling Stone",
+        url="https://www.rollingstone.com/music/music-news/feed/",
+        section="head_releases",
+        max_age_days=3,
+        max_items=3,
+        priority=82,
+        include_keywords=tuple(HEAD_RELEASE_MEDIA_INCLUDE),
+        exclude_keywords=tuple(HEAD_RELEASE_EXCLUDE),
+    ),
+    FeedSource(
+        key="pitchfork",
+        name="Pitchfork",
+        url="https://pitchfork.com/feed/feed-news/rss",
+        section="music_news",
+        max_age_days=2,
+        max_items=3,
+        priority=85,
+    ),
+    FeedSource(
+        key="pitchfork_head_release",
+        name="Pitchfork",
+        url="https://pitchfork.com/feed/feed-news/rss",
+        section="head_releases",
+        max_age_days=3,
+        max_items=3,
+        priority=80,
+        include_keywords=tuple(HEAD_RELEASE_MEDIA_INCLUDE),
+        exclude_keywords=tuple(HEAD_RELEASE_EXCLUDE),
+    ),
+    FeedSource(
+        key="mbw",
+        name="Music Business Worldwide",
+        url="https://www.musicbusinessworldwide.com/feed/",
+        section="music_ai_industry",
+        max_age_days=3,
+        max_items=4,
+        priority=90,
+        include_keywords=tuple(AI_INDUSTRY_KEYWORDS),
+    ),
+    FeedSource(
+        key="techcrunch_ai",
+        name="TechCrunch AI",
+        url="https://techcrunch.com/category/artificial-intelligence/feed/",
+        section="music_ai_industry",
+        max_age_days=3,
+        max_items=3,
+        priority=80,
+    ),
+    FeedSource(
+        key="verge_ai",
+        name="The Verge AI",
+        url="https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+        section="music_ai_industry",
+        max_age_days=3,
+        max_items=3,
+        priority=80,
+    ),
+    FeedSource(
+        key="daily_dot",
+        name="Daily Dot",
+        url="https://dailydot.com/unclick/feed",
+        section="social_trends",
+        max_age_days=3,
+        max_items=3,
+        priority=80,
+        include_keywords=tuple(SOCIAL_KEYWORDS),
+    ),
+    FeedSource(
+        key="mashable",
+        name="Mashable",
+        url="https://mashable.com/feeds/rss/all",
+        section="social_trends",
+        max_age_days=3,
+        max_items=3,
+        priority=78,
+        include_keywords=tuple(SOCIAL_KEYWORDS),
+    ),
+    FeedSource(
+        key="variety_film",
+        name="Variety Film",
+        url="https://variety.com/v/film/feed/",
+        section="culture_art",
+        max_age_days=2,
+        max_items=3,
+        priority=75,
+        include_keywords=tuple(CULTURE_KEYWORDS),
+    ),
+    FeedSource(
+        key="espn_soccer",
+        name="ESPN Soccer",
+        url="https://www.espn.com/espn/rss/soccer/news",
+        section="culture_art",
+        max_age_days=2,
+        max_items=2,
+        priority=72,
+        include_keywords=tuple(CULTURE_KEYWORDS),
+    ),
+    FeedSource(
+        key="the_hill",
+        name="The Hill",
+        url="https://thehill.com/feed/?feed=partnerfeed-news-feed&format=rss",
+        section="politics",
+        max_age_days=2,
+        max_items=2,
+        priority=82,
+        include_keywords=tuple(POLITICS_KEYWORDS),
+    ),
+    FeedSource(
+        key="npr_politics",
+        name="NPR Politics",
+        url="https://feeds.npr.org/1001/rss.xml",
+        section="politics",
+        max_age_days=2,
+        max_items=2,
+        priority=80,
+        include_keywords=tuple(POLITICS_KEYWORDS),
+    ),
+]
+
+
+PRICE_TRACKERS = [
+    {
+        "key": "spotify_us",
+        "name": "Spotify Premium (US)",
+        "url": "https://www.spotify.com/us/premium/",
+        "source_url": "https://www.spotify.com/us/premium/",
+        "plans": ["Individual", "Student", "Duo", "Family"],
+    },
+    {
+        "key": "apple_music_us",
+        "name": "Apple Music (US)",
+        "url": "https://www.apple.com/apple-music/",
+        "source_url": "https://www.apple.com/apple-music/",
+        "plans": ["Individual", "Student", "Family", "Voice"],
+    },
+    {
+        "key": "amazon_music_us",
+        "name": "Amazon Music Unlimited (US)",
+        "url": "https://www.amazon.com/music/unlimited",
+        "source_url": "https://www.amazon.com/music/unlimited",
+        "plans": ["Individual", "Student", "Family", "Prime"],
+    },
+]
+
+
+HOLIDAY_COUNTRIES = ["GB", "FR", "DE", "IT", "ES", "ID", "PH", "MY"]
+
+
+def ensure_data_dir() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def load_state() -> dict[str, Any]:
+    ensure_data_dir()
+    if not STATE_PATH.exists():
+        return {"price_snapshots": {}, "translation_cache": {}}
+    try:
+        state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        state.setdefault("price_snapshots", {})
+        state.setdefault("translation_cache", {})
+        return state
+    except (json.JSONDecodeError, OSError):
+        return {"price_snapshots": {}, "translation_cache": {}}
+
+
+def save_state(state: dict[str, Any]) -> None:
+    ensure_data_dir()
+    STATE_PATH.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def fetch_text(url: str, timeout: int = 8) -> str:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "text/html,application/xml,text/xml,application/rss+xml,*/*",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            raw = response.read()
+            return raw.decode(charset, errors="replace")
+    except urllib.error.URLError:
+        result = subprocess.run(
+            [
+                "curl",
+                "-L",
+                "-sS",
+                "--compressed",
+                "--connect-timeout",
+                str(min(timeout, 4)),
+                "--max-time",
+                str(timeout),
+                url,
+            ],
+            capture_output=True,
+            timeout=timeout,
+            check=True,
+        )
+        return result.stdout.decode("utf-8", errors="replace")
+
+
+def post_json(url: str, payload: dict[str, Any], timeout: int = 20) -> dict[str, Any]:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            return json.loads(response.read().decode(charset, errors="replace"))
+    except urllib.error.URLError:
+        result = subprocess.run(
+            [
+                "curl",
+                "-sS",
+                "--compressed",
+                "--connect-timeout",
+                str(min(timeout, 4)),
+                "--max-time",
+                str(timeout),
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json; charset=utf-8",
+                "-d",
+                json.dumps(payload, ensure_ascii=False),
+                url,
+            ],
+            capture_output=True,
+            timeout=timeout,
+            check=True,
+        )
+        return json.loads(result.stdout.decode("utf-8", errors="replace") or "{}")
+
+
+def fetch_json(url: str, timeout: int = 12) -> Any:
+    return json.loads(fetch_text(url, timeout=timeout))
+
+
+def post_form_json(
+    url: str,
+    form_fields: list[tuple[str, str]],
+    headers: dict[str, str] | None = None,
+    timeout: int = 20,
+) -> Any:
+    headers = headers or {}
+    encoded = urllib.parse.urlencode(form_fields).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=encoded,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Content-Type": "application/x-www-form-urlencoded",
+            **headers,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            return json.loads(response.read().decode(charset, errors="replace"))
+    except urllib.error.URLError:
+        cmd = [
+            "curl",
+            "-sS",
+            "--compressed",
+            "--connect-timeout",
+            str(min(timeout, 4)),
+            "--max-time",
+            str(timeout),
+            "-X",
+            "POST",
+        ]
+        for header_key, header_value in headers.items():
+            cmd.extend(["-H", f"{header_key}: {header_value}"])
+        for key, value in form_fields:
+            cmd.extend(["--data-urlencode", f"{key}={value}"])
+        cmd.append(url)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=timeout,
+            check=True,
+        )
+        return json.loads(result.stdout.decode("utf-8", errors="replace") or "{}")
+
+
+def clean_html(raw: str) -> str:
+    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", raw, flags=re.I | re.S)
+    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def normalize_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def keyword_matches(text: str, keyword: str) -> bool:
+    normalized = normalize_whitespace(text).lower()
+    normalized_keyword = normalize_whitespace(keyword).lower()
+    if re.fullmatch(r"[a-z0-9\s/+-]+", normalized_keyword):
+        pattern = r"\b" + re.escape(normalized_keyword).replace(r"\ ", r"\s+") + r"\b"
+        return re.search(pattern, normalized) is not None
+    return normalized_keyword in normalized
+
+
+def parse_datetime(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    raw = raw.strip()
+    for parser in (
+        lambda value: parsedate_to_datetime(value),
+        lambda value: datetime.fromisoformat(value.replace("Z", "+00:00")),
+    ):
+        try:
+            parsed = parser(raw)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except (TypeError, ValueError, IndexError):
+            continue
+    return None
+
+
+def parse_feed_items(feed_text: str) -> list[dict[str, Any]]:
+    root = ET.fromstring(feed_text)
+    namespace = ""
+    if root.tag.startswith("{"):
+        namespace = root.tag.split("}", 1)[0] + "}"
+
+    items: list[dict[str, Any]] = []
+    channel = root.find(f"{namespace}channel")
+    if channel is not None:
+        xml_items = channel.findall(f"{namespace}item")
+        for item in xml_items:
+            title = item.findtext(f"{namespace}title") or ""
+            link = item.findtext(f"{namespace}link") or ""
+            description = item.findtext(f"{namespace}description") or ""
+            encoded = ""
+            for child in item:
+                if child.tag.endswith("encoded") and child.text:
+                    encoded = child.text
+                    break
+            pub_date = item.findtext(f"{namespace}pubDate")
+            items.append(
+                {
+                    "title": normalize_whitespace(clean_html(title)),
+                    "link": normalize_whitespace(link),
+                    "summary": normalize_whitespace(clean_html(encoded or description)),
+                    "published_at": parse_datetime(pub_date),
+                }
+            )
+        return items
+
+    for entry in root.findall(f".//{namespace}entry"):
+        title = entry.findtext(f"{namespace}title") or ""
+        link = ""
+        for link_node in entry.findall(f"{namespace}link"):
+            candidate = link_node.attrib.get("href", "")
+            if candidate:
+                link = candidate
+                break
+        summary = entry.findtext(f"{namespace}summary") or entry.findtext(
+            f"{namespace}content"
+        ) or ""
+        published = entry.findtext(f"{namespace}published") or entry.findtext(
+            f"{namespace}updated"
+        )
+        items.append(
+            {
+                "title": normalize_whitespace(clean_html(title)),
+                "link": normalize_whitespace(link),
+                "summary": normalize_whitespace(clean_html(summary)),
+                "published_at": parse_datetime(published),
+            }
+        )
+    return items
+
+
+def first_sentence(text: str, max_len: int = 240) -> str:
+    cleaned = normalize_whitespace(text)
+    if not cleaned:
+        return ""
+    match = re.split(r"(?<=[\.\!\?。！？])\s+", cleaned, maxsplit=1)
+    sentence = match[0]
+    if len(sentence) <= max_len:
+        return sentence
+    return sentence[: max_len - 1].rstrip() + "…"
+
+
+def text_for_translation(item: NewsItem) -> str:
+    return item.title
+
+
+def clean_title_for_summary(title: str) -> str:
+    return normalize_whitespace(
+        title.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    )
+
+
+def title_based_cn_summary(item: NewsItem) -> str:
+    title = clean_title_for_summary(item.title)
+    patterns: list[tuple[re.Pattern[str], Any]] = [
+        (
+            re.compile(r"(?i)^(.+?) hit[s]? the ['\"]?(.+?)['\"]? in new song for ['\"]?(.+?)['\"]?$"),
+            lambda m: f"{m.group(1)} 以新歌《{m.group(2)}》为《{m.group(3)}》带来联动曝光。",
+        ),
+        (
+            re.compile(r"(?i)^(.+?) and (.+?) preview new song ['\"]?(.+?)['\"]? in (.+)$"),
+            lambda m: f"{m.group(1)} 与 {m.group(2)} 预告合作新歌《{m.group(3)}》，并借 {m.group(4)} 释出预热片段。",
+        ),
+        (
+            re.compile(r"(?i)^(.+?) announce(?:s)? new album ['\"]?(.+?)['\"]?$"),
+            lambda m: f"{m.group(1)} 宣布推出新专辑《{m.group(2)}》。",
+        ),
+        (
+            re.compile(r"(?i)^(.+?) announce(?:s)? (?:their |a )?new album (.+)$"),
+            lambda m: f"{m.group(1)} 宣布新专辑《{m.group(2)}》的相关动态。",
+        ),
+        (
+            re.compile(r"(?i)^(.+?) addresses? no-show at (.+)$"),
+            lambda m: f"{m.group(1)} 回应在 {m.group(2)} 的缺席争议。",
+        ),
+        (
+            re.compile(r"(?i)^(.+?) shot [& ]+hospitalized in (.+)$"),
+            lambda m: f"{m.group(1)} 在 {m.group(2)} 发生中枪并住院事件。",
+        ),
+        (
+            re.compile(r"(?i)^(.+?) .*cancel.* concert.*$"),
+            lambda m: f"{m.group(1)} 取消了原定演出。",
+        ),
+        (
+            re.compile(r"(?i)^(.+?) defends? (.+) booking.*$"),
+            lambda m: f"{m.group(1)} 就 {m.group(2)} 的演出安排作出辩护。",
+        ),
+        (
+            re.compile(r"(?i)^(.+?) sign(?:s|ed)? (.+)$"),
+            lambda m: f"{m.group(1)} 公布新的签约或合作动态：{m.group(2)}。",
+        ),
+        (
+            re.compile(r"(?i)^(.+?) extends? global partnership with (.+)$"),
+            lambda m: f"{m.group(1)} 与 {m.group(2)} 延续全球合作关系。",
+        ),
+        (
+            re.compile(r"(?i)^(.+?) exits? YouTube after (.+)$"),
+            lambda m: f"{m.group(1)} 在 YouTube 任职 {m.group(2)} 后离开平台。",
+        ),
+        (
+            re.compile(r"(?i)^A folk musician had her voice cloned by AI.*$"),
+            lambda m: "一位民谣音乐人的声音被 AI 克隆，其录音作品还被版权方错误认领。",
+        ),
+        (
+            re.compile(r"(?i)^Gemini is making it faster for (.+)$"),
+            lambda m: f"Gemini 正让 {m.group(1)} 的触达速度变得更快。",
+        ),
+        (
+            re.compile(r"(?i)^AI startup Rocket offers (.+)$"),
+            lambda m: f"AI 初创公司 Rocket 推出 {m.group(1)} 的服务方案。",
+        ),
+        (
+            re.compile(r"(?i)^(.+?) reveals? (.+ lineup.*)$"),
+            lambda m: f"{m.group(1)} 公布了 {m.group(2)}。",
+        ),
+        (
+            re.compile(r"(?i)^5 takeaways from (.+)$"),
+            lambda m: f"这条新闻总结了 {m.group(1)} 的 5 个关键信息点。",
+        ),
+        (
+            re.compile(r"(?i)^Trump suggests US could charge toll for (.+)$"),
+            lambda m: f"特朗普表示，美国可能会就 {m.group(1)} 收取通行费用。",
+        ),
+        (
+            re.compile(r"(?i)^As Trump's deadline approaches, Iranian leaders respond in defiance$"),
+            lambda m: "随着特朗普设定的最后期限临近，伊朗方面以强硬姿态作出回应。",
+        ),
+        (
+            re.compile(r"(?i)^Beer cans, helium balloons and mortgages: (.+)$"),
+            lambda m: f"这条新闻梳理了战争对啤酒罐、氦气气球和房贷等领域带来的 {m.group(1)}。",
+        ),
+        (
+            re.compile(r"(?i)^listen to (.+?) new song ['\"]?(.+?)['\"]?$"),
+            lambda m: f"收听 {m.group(1)} 的新歌《{m.group(2)}》。",
+        ),
+        (
+            re.compile(r"(?i)^(.+?) get[s]? .+ on new song ['\"]?(.+?)['\"]?$"),
+            lambda m: f"{m.group(1)} 发布新歌《{m.group(2)}》。",
+        ),
+        (
+            re.compile(r"(?i)^new music releases and upcoming albums in (\d{4})$"),
+            lambda m: f"{m.group(1)} 年最新音乐发行与即将推出的专辑汇总。",
+        ),
+    ]
+
+    for pattern, formatter in patterns:
+        match = pattern.match(title)
+        if match:
+            return formatter(match)
+
+    return trim_title(title, 90)
+
+
+def heuristic_cn_summary(item: NewsItem) -> str:
+    return title_based_cn_summary(item)
+
+
+def translate_via_deepl(text: str, timeout: int = 20) -> str:
+    if not DEEPL_API_KEY:
+        raise RuntimeError("DEEPL_API_KEY is not configured")
+    payload = post_form_json(
+        DEEPL_API_URL,
+        form_fields=[
+            ("text", text),
+            ("target_lang", "ZH"),
+            ("source_lang", "EN"),
+            ("preserve_formatting", "1"),
+        ],
+        headers={"Authorization": f"DeepL-Auth-Key {DEEPL_API_KEY}"},
+        timeout=timeout,
+    )
+    translations = payload.get("translations", [])
+    if not translations:
+        raise ValueError("DeepL response missing translations")
+    translated = normalize_whitespace(translations[0].get("text", ""))
+    if not translated:
+        raise ValueError("DeepL returned empty translation")
+    return translated
+
+
+def translate_via_google_unofficial(text: str, timeout: int = 12) -> str:
+    url = (
+        "https://translate.googleapis.com/translate_a/single"
+        f"?client=gtx&sl=auto&tl=zh-CN&dt=t&q={urllib.parse.quote(text)}"
+    )
+    payload = fetch_json(url, timeout=timeout)
+    translated = "".join(
+        part[0] for part in payload[0] if isinstance(part, list) and part and part[0]
+    )
+    translated = normalize_whitespace(translated)
+    if not translated:
+        raise ValueError("Google unofficial translate returned empty translation")
+    return translated
+
+
+def translate_text_to_zh(
+    text: str,
+    state: dict[str, Any],
+    diagnostics: list[str],
+    cache_namespace: str = "default",
+    record_errors: bool = False,
+) -> str:
+    text = normalize_whitespace(text)
+    if not text:
+        return ""
+    cache = state.setdefault("translation_cache", {})
+    cache_key = hashlib.sha256(f"{cache_namespace}|{text}".encode("utf-8")).hexdigest()
+    with TRANSLATION_CACHE_LOCK:
+        if cache_key in cache:
+            return cache[cache_key]
+
+    if not REMOTE_TRANSLATION_ENABLED:
+        with TRANSLATION_CACHE_LOCK:
+            cache[cache_key] = text
+        return text
+
+    try:
+        if DEEPL_API_KEY:
+            translated = translate_via_deepl(text, timeout=20)
+        else:
+            translated = translate_via_google_unofficial(text, timeout=12)
+        with TRANSLATION_CACHE_LOCK:
+            cache[cache_key] = translated
+        return translated
+    except (
+        urllib.error.URLError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        json.JSONDecodeError,
+        RuntimeError,
+        ValueError,
+        TypeError,
+        IndexError,
+    ) as exc:
+        if record_errors:
+            diagnostics.append(f"翻译失败: {exc}")
+
+    with TRANSLATION_CACHE_LOCK:
+        cache[cache_key] = text
+    return text
+
+
+def enrich_cn_summaries(
+    sections: dict[str, list[NewsItem]],
+    state: dict[str, Any],
+    diagnostics: list[str],
+) -> None:
+    items: list[NewsItem] = []
+    for section_items in sections.values():
+        items.extend(section_items)
+
+    def translate_item(item: NewsItem) -> tuple[NewsItem, str]:
+        if ENGLISH_OUTPUT_MODE:
+            return item, item.title
+        source_text = text_for_translation(item)
+        translated = translate_text_to_zh(
+            source_text,
+            state=state,
+            diagnostics=diagnostics,
+            cache_namespace=item.section,
+            record_errors=False,
+        )
+        if translated == source_text:
+            translated = heuristic_cn_summary(item)
+        return item, translated
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(translate_item, item) for item in items]
+        for future in concurrent.futures.as_completed(futures):
+            item, translated = future.result()
+            item.cn_summary = translated
+
+
+def translate_holiday_name(
+    name: str,
+    state: dict[str, Any],
+    diagnostics: list[str],
+) -> str:
+    holiday_map = {
+        "Early May Bank Holiday": "五月初银行假日",
+        "Truman Day": "杜鲁门日",
+        "Victoire 1945": "1945 胜利纪念日",
+        "Fiesta de la Comunidad de Madrid": "马德里自治区日",
+    }
+    if name in holiday_map:
+        return holiday_map[name]
+    translated = translate_text_to_zh(
+        name,
+        state=state,
+        diagnostics=diagnostics,
+        cache_namespace="holiday",
+        record_errors=False,
+    )
+    return translated if translated != name else name
+
+
+def contains_any(text: str, keywords: tuple[str, ...] | list[str]) -> bool:
+    return any(keyword_matches(text, keyword) for keyword in keywords)
+
+
+def infer_release_tag(text: str) -> str:
+    lowered = text.lower()
+    if keyword_matches(lowered, "music video") or keyword_matches(lowered, "video") or keyword_matches(lowered, "mv") or keyword_matches(lowered, "visual"):
+        return "MV"
+    if keyword_matches(lowered, "album") or re.search(r"\bep\b|\blp\b", lowered):
+        return "专辑"
+    if keyword_matches(lowered, "teaser") or keyword_matches(lowered, "trailer") or keyword_matches(lowered, "pre-save"):
+        return "预热"
+    return "新歌"
+
+
+def infer_music_news_tag(text: str) -> str:
+    lowered = text.lower()
+    if keyword_matches(lowered, "tour"):
+        return "巡演"
+    if keyword_matches(lowered, "festival"):
+        return "音乐节"
+    if keyword_matches(lowered, "chart"):
+        return "榜单"
+    if keyword_matches(lowered, "album") or keyword_matches(lowered, "single"):
+        return "发行动态"
+    return "行业资讯"
+
+
+def infer_ai_tag(text: str) -> str:
+    lowered = text.lower()
+    if keyword_matches(lowered, "price") or keyword_matches(lowered, "pricing") or keyword_matches(lowered, "subscription"):
+        return "订阅价格"
+    if keyword_matches(lowered, "ai") or keyword_matches(lowered, "artificial intelligence"):
+        return "AI"
+    if keyword_matches(lowered, "streaming"):
+        return "流媒体"
+    return "产业"
+
+
+def infer_social_tag(text: str) -> str:
+    lowered = text.lower()
+    if keyword_matches(lowered, "meme"):
+        return "Meme"
+    if keyword_matches(lowered, "viral"):
+        return "Viral"
+    if keyword_matches(lowered, "tiktok"):
+        return "TikTok"
+    if keyword_matches(lowered, "instagram"):
+        return "Instagram"
+    return "平台热议"
+
+
+def infer_culture_tag(text: str) -> str:
+    lowered = text.lower()
+    if keyword_matches(lowered, "soccer") or keyword_matches(lowered, "football"):
+        return "足球"
+    if keyword_matches(lowered, "film") or keyword_matches(lowered, "movie") or keyword_matches(lowered, "trailer"):
+        return "电影"
+    if keyword_matches(lowered, "art") or keyword_matches(lowered, "museum") or keyword_matches(lowered, "exhibition"):
+        return "艺术"
+    return "跨界文化"
+
+
+def infer_politics_tag(text: str) -> str:
+    lowered = text.lower()
+    if keyword_matches(lowered, "election"):
+        return "选举"
+    if keyword_matches(lowered, "war"):
+        return "地缘政治"
+    if keyword_matches(lowered, "tariff") or keyword_matches(lowered, "trade"):
+        return "政策"
+    return "政治热点"
+
+
+def item_tag(section: str, text: str) -> str:
+    if section == "head_releases":
+        return infer_release_tag(text)
+    if section == "music_news":
+        return infer_music_news_tag(text)
+    if section == "music_ai_industry":
+        return infer_ai_tag(text)
+    if section == "social_trends":
+        return infer_social_tag(text)
+    if section == "culture_art":
+        return infer_culture_tag(text)
+    if section == "politics":
+        return infer_politics_tag(text)
+    return "动态"
+
+
+def item_age_in_days(item_dt: datetime | None, report_dt: datetime) -> float:
+    if item_dt is None:
+        return 999.0
+    delta = report_dt - item_dt.astimezone(report_dt.tzinfo)
+    return delta.total_seconds() / 86400
+
+
+def score_item(source: FeedSource, item: dict[str, Any], report_dt: datetime) -> float:
+    text = f"{item['title']} {item['summary']}".lower()
+    age_days = max(item_age_in_days(item["published_at"], report_dt), 0)
+    freshness = max(0.0, 20.0 - age_days * 8.0)
+    keyword_bonus = 0.0
+    if source.include_keywords:
+        keyword_bonus += sum(
+            1.8 for keyword in source.include_keywords if keyword_matches(text, keyword)
+        )
+    if source.exclude_keywords:
+        keyword_bonus -= sum(
+            2.5 for keyword in source.exclude_keywords if keyword_matches(text, keyword)
+        )
+    if source.section == "head_releases":
+        keyword_bonus += sum(
+            6.0 for artist in HEAD_RELEASE_PRIORITY_ARTISTS if keyword_matches(text, artist)
+        )
+    return source.priority + freshness + keyword_bonus
+
+
+def filter_items_for_source(
+    source: FeedSource, feed_items: list[dict[str, Any]], report_dt: datetime
+) -> list[NewsItem]:
+    selected: list[NewsItem] = []
+    for item in feed_items:
+        title = item["title"]
+        summary = item["summary"]
+        link = item["link"]
+        if not title or not link:
+            continue
+
+        full_text = f"{title} {summary}"
+        include_text = (
+            title
+            if source.section in {"social_trends", "music_ai_industry"} or source.key.endswith("_head_release")
+            else full_text
+        )
+        if source.include_keywords and not contains_any(include_text, source.include_keywords):
+            continue
+        if source.exclude_keywords and contains_any(full_text, source.exclude_keywords):
+            continue
+
+        if source.key == "billboard" and "/music/" not in link:
+            continue
+        if source.key == "billboard_head_release" and "/music/" not in link:
+            continue
+        if source.key == "mashable" and not contains_any(title, source.include_keywords):
+            continue
+        if source.key == "mbw" and not contains_any(title, source.include_keywords):
+            continue
+        if source.key.endswith("_head_release") and contains_any(
+            full_text,
+            (
+                "tour",
+                "festival appearance",
+                "cancel concert",
+                "hospitalized",
+                "shot",
+                "critic",
+                "statement",
+                "lawsuit",
+                "prison release",
+                "release from prison",
+            ),
+        ):
+            continue
+
+        age_days = item_age_in_days(item["published_at"], report_dt)
+        if age_days > source.max_age_days:
+            continue
+
+        if source.section == "head_releases" and not contains_any(full_text, HEAD_RELEASE_INCLUDE):
+            if not source.key.endswith("_head_release"):
+                continue
+
+        tag = item_tag(source.section, full_text)
+        score = score_item(source, item, report_dt)
+        selected.append(
+            NewsItem(
+                source_key=source.key,
+                source_name=source.name,
+                section=source.section,
+                title=title,
+                link=link,
+                summary=summary,
+                published_at=item["published_at"],
+                priority=source.priority,
+                tag=tag,
+                score=score,
+            )
+        )
+
+    selected.sort(
+        key=lambda item: (
+            item.score,
+            item.published_at.timestamp() if item.published_at else 0,
+        ),
+        reverse=True,
+    )
+
+    unique: list[NewsItem] = []
+    seen: set[str] = set()
+    for item in selected:
+        dedupe_key = hashlib.md5(
+            f"{item.section}|{item.title.lower()}|{item.link}".encode("utf-8")
+        ).hexdigest()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        unique.append(item)
+        if len(unique) >= source.max_items:
+            break
+    return unique
+
+
+def fetch_section_items(report_dt: datetime, diagnostics: list[str]) -> dict[str, list[NewsItem]]:
+    sections: dict[str, list[NewsItem]] = {section: [] for section in SECTION_TITLES if section != "action_items"}
+
+    def process_source(source: FeedSource) -> tuple[str, list[NewsItem], str | None]:
+        try:
+            feed_text = fetch_text(source.url)
+            feed_items = parse_feed_items(feed_text)
+            items = filter_items_for_source(source, feed_items, report_dt)
+            return source.section, items, None
+        except (
+            urllib.error.URLError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            ET.ParseError,
+            TimeoutError,
+            ValueError,
+        ) as exc:
+            return source.section, [], f"{source.name} 抓取失败: {exc}"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(process_source, source) for source in FEED_SOURCES]
+        for future in concurrent.futures.as_completed(futures):
+            section, items, error = future.result()
+            sections[section].extend(items)
+            if error:
+                diagnostics.append(error)
+
+    for section, items in sections.items():
+        items.sort(
+            key=lambda item: (
+                item.score,
+                item.published_at.timestamp() if item.published_at else 0,
+            ),
+            reverse=True,
+        )
+        deduped: list[NewsItem] = []
+        seen_titles: set[str] = set()
+        for item in items:
+            title_key = item.title.lower()
+            if title_key in seen_titles:
+                continue
+            seen_titles.add(title_key)
+            deduped.append(item)
+        section_limit = 4 if section in {"head_releases", "music_news", "music_ai_industry"} else 3
+        if section == "politics":
+            section_limit = 2
+        sections[section] = deduped[:section_limit]
+    return sections
+
+
+def fetch_holiday_items(
+    report_date: date,
+    state: dict[str, Any],
+    diagnostics: list[str],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+
+    years = [report_date.year]
+    if report_date.month >= 11:
+        years.append(report_date.year + 1)
+
+    def fetch_country_holidays(country: str, year: int) -> tuple[list[dict[str, Any]], str | None]:
+        url = f"https://date.nager.at/api/v3/PublicHolidays/{year}/{country}"
+        try:
+            data = fetch_json(url, timeout=12)
+        except (
+            urllib.error.URLError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+            ValueError,
+        ) as exc:
+            return [], f"Nager.Date {country}-{year} 抓取失败: {exc}"
+        return data, None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        futures = [
+            executor.submit(fetch_country_holidays, country, year)
+            for country in HOLIDAY_COUNTRIES
+            for year in years
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            data, error = future.result()
+            if error:
+                diagnostics.append(error)
+                continue
+            for holiday in data:
+                country = holiday.get("countryCode")
+                holiday_date = date.fromisoformat(holiday["date"])
+                days_left = (holiday_date - report_date).days
+                if not (1 <= days_left <= 3 or 25 <= days_left <= 35):
+                    continue
+                name = holiday.get("localName") or holiday.get("name")
+                items.append(
+                    {
+                        "country": country,
+                        "country_name": COUNTRY_NAMES.get(country, country),
+                        "name": name,
+                        "name_cn": translate_holiday_name(name, state, diagnostics),
+                        "english_name": holiday.get("name"),
+                        "date": holiday_date,
+                        "days_left": days_left,
+                        "tag": "临期提醒" if days_left <= 3 else "排期预警",
+                        "source_name": "Nager.Date",
+                        "link": f"https://date.nager.at/api/v3/PublicHolidays/{holiday_date.year}/{country}",
+                    }
+                )
+    items.sort(key=lambda item: (item["days_left"], item["country"]))
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        key = f"{item['country']}|{item['date']}|{item['english_name']}"
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique[:5]
+
+
+def extract_price_offers(raw_html: str, plans: list[str]) -> list[str]:
+    cleaned = clean_html(raw_html)
+    offers: list[str] = []
+    for plan in plans:
+        pattern = re.compile(
+            rf"({re.escape(plan)}[^$]{{0,80}}\$[0-9]+(?:\.[0-9]{{2}})?(?:[^A-Za-z0-9]{{0,10}}(?:/month|a month|/mo|per month))?)",
+            re.I,
+        )
+        for match in pattern.finditer(cleaned):
+            offer = normalize_whitespace(match.group(1))
+            if offer not in offers:
+                offers.append(offer)
+                break
+
+    if offers:
+        return offers
+
+    generic = re.findall(
+        r"([A-Za-z][A-Za-z\s]{0,30}\$[0-9]+(?:\.[0-9]{2})?(?:\s*(?:/month|a month|/mo|per month))?)",
+        cleaned,
+        flags=re.I,
+    )
+    deduped: list[str] = []
+    for offer in generic:
+        offer = normalize_whitespace(offer)
+        if offer not in deduped:
+            deduped.append(offer)
+    return deduped[:6]
+
+
+def fetch_price_alerts(
+    report_dt: datetime, state: dict[str, Any], diagnostics: list[str]
+) -> list[dict[str, Any]]:
+    snapshots = state.setdefault("price_snapshots", {})
+    alerts: list[dict[str, Any]] = []
+
+    def process_tracker(tracker: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
+        try:
+            raw_html = fetch_text(tracker["url"])
+        except (
+            urllib.error.URLError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ) as exc:
+            return None, None, f"{tracker['name']} 抓取失败: {exc}"
+
+        offers = extract_price_offers(raw_html, tracker["plans"])
+        if not offers:
+            return None, None, f"{tracker['name']} 未识别到价格结构"
+
+        fingerprint = hashlib.sha256("\n".join(offers).encode("utf-8")).hexdigest()
+        previous = snapshots.get(tracker["key"])
+        alert: dict[str, Any] | None = None
+        if previous and previous.get("fingerprint") != fingerprint:
+            alert = {
+                "service": tracker["name"],
+                "tag": "订阅价格",
+                "before": previous.get("offers", []),
+                "after": offers,
+                "captured_at": report_dt.isoformat(),
+                "link": tracker["source_url"],
+            }
+
+        snapshot = {
+            "key": tracker["key"],
+            "service": tracker["name"],
+            "offers": offers,
+            "fingerprint": fingerprint,
+            "captured_at": report_dt.isoformat(),
+        }
+        return alert, snapshot, None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(process_tracker, tracker) for tracker in PRICE_TRACKERS]
+        for future in concurrent.futures.as_completed(futures):
+            alert, snapshot, error = future.result()
+            if error:
+                diagnostics.append(error)
+            if alert:
+                alerts.append(alert)
+            if snapshot:
+                snapshots[snapshot["key"]] = {
+                    "service": snapshot["service"],
+                    "offers": snapshot["offers"],
+                    "fingerprint": snapshot["fingerprint"],
+                    "captured_at": snapshot["captured_at"],
+                }
+
+    return alerts
+
+
+def format_date_cn(value: date) -> str:
+    return f"{value.year:04d}-{value.month:02d}-{value.day:02d}"
+
+
+def trim_title(title: str, max_len: int = 110) -> str:
+    if len(title) <= max_len:
+        return title
+    return title[: max_len - 1].rstrip() + "…"
+
+
+def item_to_markdown_line(item: NewsItem) -> str:
+    summary = normalize_whitespace(item.cn_summary or heuristic_cn_summary(item))
+    summary = trim_title(summary, 140)
+    link = item.link
+    return f"- [{item.tag}] {summary}  \n  信源: [{item.source_name}]({link})"
+
+
+def holiday_to_markdown_line(item: dict[str, Any]) -> str:
+    holiday_name = item.get("name_cn") or item["name"]
+    return (
+        f"- [{item['tag']}] {item['country_name']} 的 {holiday_name} 将在 "
+        f"{format_date_cn(item['date'])} 到来（D-{item['days_left']}）  \n"
+        f"  信源: [{item['source_name']}]({item['link']})"
+    )
+
+
+def price_alert_to_markdown_line(item: dict[str, Any]) -> str:
+    before = " / ".join(item["before"]) if item["before"] else "无历史快照"
+    after = " / ".join(item["after"])
+    return (
+        f"- [订阅价格] {item['service']} 的官方订阅价格发生变化，旧价格为 {before}；当前价格为 {after}。  \n"
+        f"  信源: [{item['service']}]({item['link']})"
+    )
+
+
+def summarize_action_items(
+    report_date: date,
+    sections: dict[str, list[NewsItem]],
+    holidays: list[dict[str, Any]],
+    price_alerts: list[dict[str, Any]],
+) -> list[str]:
+    actions: list[str] = []
+
+    if sections["head_releases"]:
+        item = sections["head_releases"][0]
+        actions.append(
+            f"围绕“{trim_title(item.cn_summary or item.title, 60)}”做 App 内新歌/专辑上新提醒，社媒同步准备 15 秒短视频和封面二创素材。"
+        )
+
+    if sections["social_trends"]:
+        item = sections["social_trends"][0]
+        actions.append(
+            f"把“{trim_title(item.cn_summary or item.title, 50)}”拆成轻量跟梗内容，优先试 TikTok / IG Reels 文案和 BGM 模板。"
+        )
+
+    if sections["music_ai_industry"]:
+        item = sections["music_ai_industry"][0]
+        actions.append(
+            f"基于“{trim_title(item.cn_summary or item.title, 52)}”做一条竞品观察或创作者教程选题，适合用于 AI 音频工具的内容运营。"
+        )
+
+    if price_alerts:
+        item = price_alerts[0]
+        actions.append(
+            f"{item['service']} 价格有变动，建议今天同步检查你们的订阅转化文案、对比页和社媒话术。"
+        )
+
+    if holidays:
+        holiday = holidays[0]
+        actions.append(
+            f"针对 {holiday['country_name']} 的 {holiday.get('name_cn') or holiday['name']}，从今天开始排期本地化歌单、Push 和节日倒计时社媒素材。"
+        )
+
+    if sections["politics"]:
+        item = sections["politics"][0]
+        actions.append(
+            f"政治热点只做轻量借势，围绕“{trim_title(item.cn_summary or item.title, 44)}”采用中性语气做话题歌单或热点 BGM。"
+        )
+
+    if not actions:
+        actions.append(
+            f"{format_date_cn(report_date)} 暂无高优先级海外事件，建议维持常规音乐发行观察与 24 小时社媒热点轮巡。"
+        )
+
+    return actions[:4]
+
+
+def build_card_payload(
+    report_dt: datetime,
+    sections: dict[str, list[NewsItem]],
+    holidays: list[dict[str, Any]],
+    price_alerts: list[dict[str, Any]],
+    action_items: list[str],
+) -> dict[str, Any]:
+    report_label = format_date_cn(report_dt.date())
+    elements: list[dict[str, Any]] = [
+        {
+            "tag": "markdown",
+            "content": (
+                f"**海外运营每日资讯播报 ({report_label})**\n"
+                f"生成时间: {report_dt.strftime('%Y-%m-%d %H:%M %Z')}\n"
+                "口径: 官方厂牌 / 海外音乐媒体 / AI 与流媒体 / 节庆 / 社媒 / 文化 / 政治"
+            ),
+        }
+    ]
+
+    ordered_sections = [
+        "head_releases",
+        "music_news",
+        "music_ai_industry",
+        "holiday_events",
+        "social_trends",
+        "culture_art",
+        "politics",
+    ]
+
+    for section in ordered_sections:
+        lines: list[str] = []
+        if section == "holiday_events":
+            if holidays:
+                lines.extend(holiday_to_markdown_line(item) for item in holidays)
+            else:
+                lines.append("- 今日无重大节庆预警")
+        elif section == "music_ai_industry":
+            lines.extend(item_to_markdown_line(item) for item in sections[section])
+            lines.extend(price_alert_to_markdown_line(item) for item in price_alerts)
+        else:
+            lines.extend(item_to_markdown_line(item) for item in sections[section])
+
+        if not lines:
+            continue
+
+        elements.append({"tag": "hr"})
+        elements.append(
+            {
+                "tag": "markdown",
+                "content": f"**{SECTION_TITLES[section]}**\n" + "\n".join(lines),
+            }
+        )
+
+    elements.append({"tag": "hr"})
+    elements.append(
+        {
+            "tag": "markdown",
+            "content": "**今日重点建议**\n"
+            + "\n".join(f"{index}. {line}" for index, line in enumerate(action_items, start=1)),
+        }
+    )
+
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True, "enable_forward": True},
+            "header": {
+                "template": "blue",
+                "title": {"tag": "plain_text", "content": f"海外运营雷达 | {report_label}"},
+            },
+            "elements": elements,
+        },
+    }
+
+
+def build_console_preview(
+    report_dt: datetime,
+    sections: dict[str, list[NewsItem]],
+    holidays: list[dict[str, Any]],
+    price_alerts: list[dict[str, Any]],
+    action_items: list[str],
+    diagnostics: list[str],
+) -> str:
+    blocks = [f"海外运营每日资讯播报 ({format_date_cn(report_dt.date())})"]
+    for section in [
+        "head_releases",
+        "music_news",
+        "music_ai_industry",
+        "holiday_events",
+        "social_trends",
+        "culture_art",
+        "politics",
+    ]:
+        blocks.append(f"\n## {SECTION_TITLES[section]}")
+        if section == "holiday_events":
+            if holidays:
+                blocks.extend(holiday_to_markdown_line(item) for item in holidays)
+            else:
+                blocks.append("- 今日无重大节庆预警")
+            continue
+        if section == "music_ai_industry":
+            if sections[section]:
+                blocks.extend(item_to_markdown_line(item) for item in sections[section])
+            if price_alerts:
+                blocks.extend(price_alert_to_markdown_line(item) for item in price_alerts)
+            if not sections[section] and not price_alerts:
+                blocks.append("- 今日无高优先级 AI / 产业动态")
+            continue
+        if sections[section]:
+            blocks.extend(item_to_markdown_line(item) for item in sections[section])
+        else:
+            blocks.append("- 今日无高优先级条目")
+
+    blocks.append("\n## 今日重点建议")
+    blocks.extend(f"{index}. {line}" for index, line in enumerate(action_items, start=1))
+
+    if diagnostics:
+        blocks.append("\n## 诊断信息")
+        blocks.extend(f"- {line}" for line in diagnostics)
+    return "\n".join(blocks)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="海外舆情自动监控并推送到飞书",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument("--send", action="store_true", help="推送到飞书 webhook")
+    parser.add_argument("--dry-run", action="store_true", help="仅输出预览，不推送")
+    parser.add_argument("--date", help="报告日期，格式 YYYY-MM-DD")
+    parser.add_argument("--timezone", default=DEFAULT_TIMEZONE, help="报告时区")
+    parser.add_argument("--webhook", help="飞书 webhook URL；默认读取 FEISHU_WEBHOOK_URL")
+    parser.add_argument("--debug", action="store_true", help="输出诊断信息")
+    return parser.parse_args()
+
+
+def resolve_report_datetime(args: argparse.Namespace) -> datetime:
+    tz = ZoneInfo(args.timezone)
+    if args.date:
+        report_date = date.fromisoformat(args.date)
+        return datetime.combine(report_date, datetime.min.time(), tzinfo=tz) + timedelta(hours=9, minutes=30)
+    return datetime.now(tz)
+
+
+def main() -> int:
+    args = parse_args()
+    if not args.send and not args.dry_run:
+        args.dry_run = True
+
+    report_dt = resolve_report_datetime(args)
+    diagnostics: list[str] = []
+    state = load_state()
+
+    sections = fetch_section_items(report_dt, diagnostics)
+    holidays = fetch_holiday_items(report_dt.date(), state, diagnostics)
+    enrich_cn_summaries(sections, state, diagnostics)
+    price_alerts = fetch_price_alerts(report_dt, state, diagnostics)
+    action_items = summarize_action_items(report_dt.date(), sections, holidays, price_alerts)
+    save_state(state)
+    ensure_data_dir()
+
+    preview = build_console_preview(
+        report_dt=report_dt,
+        sections=sections,
+        holidays=holidays,
+        price_alerts=price_alerts,
+        action_items=action_items,
+        diagnostics=diagnostics if args.debug else [],
+    )
+    payload = build_card_payload(report_dt, sections, holidays, price_alerts, action_items)
+    (DATA_DIR / "last_report.md").write_text(preview, encoding="utf-8")
+    (DATA_DIR / "last_card.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(preview)
+
+    if args.send:
+        webhook = args.webhook or os.environ.get("FEISHU_WEBHOOK_URL")
+        if not webhook:
+            print("\n缺少飞书 webhook，请通过 --webhook 或 FEISHU_WEBHOOK_URL 提供。", file=sys.stderr)
+            return 2
+
+        try:
+            response = post_json(webhook, payload)
+        except (
+            urllib.error.URLError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as exc:
+            print(f"\n飞书推送失败: {exc}", file=sys.stderr)
+            return 3
+
+        print("\nFeishu response:")
+        print(json.dumps(response, ensure_ascii=False, indent=2))
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

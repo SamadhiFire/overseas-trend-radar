@@ -1,0 +1,5 @@
+__pycache__/
+data/webhook.txt
+data/last_report.md
+data/last_card.json
+data/state.json
