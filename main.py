@@ -27,8 +27,8 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 STATE_PATH = DATA_DIR / "state.json"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
-DEFAULT_REPORT_HOUR = 10
-DEFAULT_REPORT_MINUTE = 30
+DEFAULT_REPORT_HOUR = 11
+DEFAULT_REPORT_MINUTE = 4
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
