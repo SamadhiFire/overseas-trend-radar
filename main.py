@@ -484,14 +484,15 @@ def ensure_data_dir() -> None:
 def load_state() -> dict[str, Any]:
     ensure_data_dir()
     if not STATE_PATH.exists():
-        return {"price_snapshots": {}, "translation_cache": {}}
+        return {"price_snapshots": {}, "translation_cache": {}, "delivery": {}}
     try:
         state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
         state.setdefault("price_snapshots", {})
         state.setdefault("translation_cache", {})
+        state.setdefault("delivery", {})
         return state
     except (json.JSONDecodeError, OSError):
-        return {"price_snapshots": {}, "translation_cache": {}}
+        return {"price_snapshots": {}, "translation_cache": {}, "delivery": {}}
 
 
 def save_state(state: dict[str, Any]) -> None:
@@ -1629,6 +1630,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timezone", default=DEFAULT_TIMEZONE, help="报告时区")
     parser.add_argument("--webhook", help="飞书 webhook URL；默认读取 FEISHU_WEBHOOK_URL")
     parser.add_argument("--debug", action="store_true", help="输出诊断信息")
+    parser.add_argument(
+        "--skip-if-already-sent",
+        action="store_true",
+        help="如果当天已成功推送，则跳过本次发送",
+    )
     return parser.parse_args()
 
 
@@ -1674,6 +1680,12 @@ def main() -> int:
     print(preview)
 
     if args.send:
+        delivery_state = state.setdefault("delivery", {})
+        report_date_str = report_dt.date().isoformat()
+        if args.skip_if_already_sent and delivery_state.get("last_sent_date") == report_date_str:
+            print(f"\n{report_date_str} 已成功推送过，跳过本次重复发送。")
+            return 0
+
         webhook = args.webhook or os.environ.get("FEISHU_WEBHOOK_URL")
         if not webhook:
             print("\n缺少飞书 webhook，请通过 --webhook 或 FEISHU_WEBHOOK_URL 提供。", file=sys.stderr)
@@ -1692,6 +1704,9 @@ def main() -> int:
 
         print("\nFeishu response:")
         print(json.dumps(response, ensure_ascii=False, indent=2))
+        delivery_state["last_sent_date"] = report_date_str
+        delivery_state["last_sent_at"] = datetime.now(ZoneInfo(args.timezone)).isoformat()
+        save_state(state)
 
     return 0
 

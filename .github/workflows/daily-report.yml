@@ -9,6 +9,7 @@ on:
         type: string
   schedule:
     - cron: "30 1 * * *"
+    - cron: "40 1 * * *"
 
 jobs:
   run-report:
@@ -42,6 +43,9 @@ jobs:
         run: |
           set -euo pipefail
           ARGS=("--send")
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            ARGS+=("--skip-if-already-sent")
+          fi
           if [[ -n "${{ github.event.inputs.report_date || '' }}" ]]; then
             ARGS+=("--date" "${{ github.event.inputs.report_date }}")
           fi
