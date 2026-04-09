@@ -48,9 +48,9 @@ cd /Users/mac/Downloads/overseas-trend-radar
 python3 main.py --dry-run --date 2026-04-07 --debug
 ```
 
-## GitHub Actions 方案
+## GitHub Actions 执行方案
 
-这是当前推荐方案，免费、稳定，也不依赖本机开机。
+当前推荐方式是：外部 cron 服务负责定时，GitHub Actions 只负责执行。
 
 ### 1. 把项目放到 GitHub 仓库
 
@@ -67,15 +67,22 @@ python3 main.py --dry-run --date 2026-04-07 --debug
 ### 3. 启用工作流
 
 - 工作流文件是 [.github/workflows/daily-report.yml](/Users/mac/Downloads/overseas-trend-radar/.github/workflows/daily-report.yml)
-- 它会在 `UTC 03:04` 运行，也就是北京时间每天 `11:04`
-- 同时保留一个 `UTC 03:14` 的兜底触发；若当天已成功发送，则自动跳过，避免双发
+- 当前不再依赖 GitHub 自带 `schedule`
+- 推荐让外部 cron 服务按北京时间每天 `11:04` 调用 `workflow_dispatch`
+- 若担心偶发失败，可在外部 cron 再加一个 `11:14` 的兜底任务
 - 也支持在 GitHub 页面手动点 `Run workflow` 立即试跑
 
 ### 4. 试运行
 
 - 在 GitHub Actions 页面手动运行一次
 - 可选输入 `report_date`
+- 建议保留 `skip_if_already_sent = true`
 - 运行后会把 `last_report.md`、`last_card.json`、`state.json` 作为 artifact 上传，便于排查
+
+### 5. 外部定时触发
+
+- 推荐用 `cron-job.org` 免费版
+- 具体配置见 [EXTERNAL_CRON_SETUP.md](/Users/mac/Downloads/overseas-trend-radar/EXTERNAL_CRON_SETUP.md)
 
 ## 当前信源
 
@@ -129,10 +136,10 @@ python3 main.py --dry-run --date 2026-04-07 --debug
 
 ## 建议部署方案
 
-### 方案 A：GitHub Actions 定时
+### 方案 A：外部 cron + GitHub Actions
 
-- 免费额度足够轻量日报
-- 不依赖本机关机状态
+- 免费且比 GitHub 原生 `schedule` 更稳
+- GitHub 只执行，不负责定时
 - 最适合当前版本
 
 ### 方案 B：本机 `launchd` 定时
