@@ -67,7 +67,8 @@ python3 main.py --dry-run --date 2026-04-07 --debug
 ### 3. 启用工作流
 
 - 工作流文件是 [.github/workflows/daily-report.yml](/Users/mac/Downloads/overseas-trend-radar/.github/workflows/daily-report.yml)
-- 它会在 `UTC 01:30` 运行，也就是北京时间每天 `09:30`
+- 它会在 `UTC 02:00` 运行，也就是北京时间每天 `10:00`
+- 同时保留一个 `UTC 02:10` 的兜底触发；若当天已成功发送，则自动跳过，避免双发
 - 也支持在 GitHub 页面手动点 `Run workflow` 立即试跑
 
 ### 4. 试运行

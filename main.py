@@ -27,6 +27,8 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 STATE_PATH = DATA_DIR / "state.json"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
+DEFAULT_REPORT_HOUR = 10
+DEFAULT_REPORT_MINUTE = 0
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -1642,7 +1644,10 @@ def resolve_report_datetime(args: argparse.Namespace) -> datetime:
     tz = ZoneInfo(args.timezone)
     if args.date:
         report_date = date.fromisoformat(args.date)
-        return datetime.combine(report_date, datetime.min.time(), tzinfo=tz) + timedelta(hours=9, minutes=30)
+        return datetime.combine(report_date, datetime.min.time(), tzinfo=tz) + timedelta(
+            hours=DEFAULT_REPORT_HOUR,
+            minutes=DEFAULT_REPORT_MINUTE,
+        )
     return datetime.now(tz)
 
 
