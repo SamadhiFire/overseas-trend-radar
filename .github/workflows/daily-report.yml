@@ -5,6 +5,8 @@ concurrency:
   cancel-in-progress: false
 
 on:
+  schedule:
+    - cron: '13 5 * * *'
   workflow_dispatch:
     inputs:
       report_date:
