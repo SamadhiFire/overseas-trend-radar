@@ -77,25 +77,33 @@ REPORT_SECTION_ORDER = [
 
 
 SECTION_LIMITS = {
-    "head_releases": 5,
-    "music_ai_industry": 4,
-    "social_trends": 5,
-    "culture_art": 3,
-    "politics": 4,
+    "head_releases": 6,
+    "music_ai_industry": 6,
+    "social_trends": 6,
+    "culture_art": 6,
+    "politics": 6,
     "ops_suggestions": 0,  # 由 generate_action_plan 填充，不走 RSS 通道
+}
+
+
+SECTION_MIN_COUNTS = {
+    "head_releases": 3,
+    "social_trends": 3,
+    "culture_art": 2,
+    "politics": 3,
 }
 
 
 SECTION_MIN_BUSINESS_SCORES = {
     "head_releases": 3.0,
-    "music_ai_industry": 4.2,
+    "music_ai_industry": 3.0,
     "social_trends": 2.0,  # 从 3.2 降低，允许更多社媒事件
-    "culture_art": 2.4,
+    "culture_art": 1.0,
     "politics": 0.0,  # 政治新闻直接放行，不要求业务相关
 }
 
 
-MAX_REPORT_ITEMS = 18
+MAX_REPORT_ITEMS = 36
 
 
 COUNTRY_NAMES = {
@@ -367,13 +375,59 @@ POLITICS_KEYWORDS = [
 CULTURE_KEYWORDS = [
     "film",
     "movie",
+    "cinema",
+    "theater",
+    "theatre",
+    "tv",
+    "series",
+    "showrunner",
+    "streaming series",
     "festival",
+    "cannes",
+    "sundance",
+    "venice",
+    "berlin",
+    "toronto",
+    "tribeca",
+    "sxsw",
+    "locarno",
+    "miffest",
     "soccer",
     "football",
     "art",
+    "artist",
+    "gallery",
     "museum",
     "exhibition",
+    "installation",
+    "contemporary art",
     "trailer",
+    "teaser",
+    "adaptation",
+    "prequel",
+    "sequel",
+    "remake",
+    "reboot",
+    "documentary",
+    "animation",
+    "anime",
+    "horror",
+    "sci-fi",
+    "fantasy",
+    "director",
+    "filmmaker",
+    "actor",
+    "actress",
+    "cast",
+    "screenwriter",
+    "producer",
+    "auteur",
+    "franchise",
+    "video game adaptation",
+    "letterboxd",
+    "soundtrack",
+    "score",
+    "composer",
     "box office",
 ]
 
@@ -500,18 +554,56 @@ SOCIAL_FUN_KEYWORDS = [
 CULTURE_FUN_KEYWORDS = [
     "film",
     "movie",
+    "cinema",
     "tv",
     "series",
+    "streaming series",
     "trailer",
+    "teaser",
+    "adaptation",
+    "prequel",
+    "sequel",
+    "remake",
+    "reboot",
+    "horror",
+    "sci-fi",
+    "fantasy",
+    "animation",
+    "anime",
+    "director",
+    "filmmaker",
+    "actor",
+    "actress",
+    "cast",
+    "screenwriter",
+    "producer",
+    "auteur",
+    "franchise",
+    "video game adaptation",
+    "letterboxd",
     "festival",
+    "cannes",
+    "sundance",
+    "venice",
+    "berlin",
+    "toronto",
+    "tribeca",
+    "sxsw",
+    "locarno",
     "art",
+    "artist",
+    "gallery",
     "museum",
     "exhibition",
+    "installation",
+    "contemporary art",
     "documentary",
-    "animation",
     "youth culture",
     "fashion",
     "visual",
+    "soundtrack",
+    "score",
+    "composer",
 ]
 
 
@@ -796,9 +888,89 @@ FEED_SOURCES = [
         name="Variety Film",
         url="https://variety.com/v/film/feed/",
         section="culture_art",
-        max_age_days=2,
+        max_age_days=3,
         max_items=3,
         priority=75,
+        include_keywords=tuple(CULTURE_KEYWORDS),
+    ),
+    FeedSource(
+        key="deadline_film",
+        name="Deadline Film",
+        url="https://deadline.com/v/film/feed/",
+        section="culture_art",
+        max_age_days=3,
+        max_items=4,
+        priority=78,
+        include_keywords=tuple(CULTURE_KEYWORDS),
+    ),
+    FeedSource(
+        key="deadline_tv",
+        name="Deadline TV",
+        url="https://deadline.com/v/tv/feed/",
+        section="culture_art",
+        max_age_days=3,
+        max_items=3,
+        priority=74,
+        include_keywords=tuple(CULTURE_KEYWORDS),
+    ),
+    FeedSource(
+        key="thr_movies",
+        name="The Hollywood Reporter Movies",
+        url="https://www.hollywoodreporter.com/c/movies/feed/",
+        section="culture_art",
+        max_age_days=3,
+        max_items=4,
+        priority=76,
+        include_keywords=tuple(CULTURE_KEYWORDS),
+    ),
+    FeedSource(
+        key="thr_tv",
+        name="The Hollywood Reporter TV",
+        url="https://www.hollywoodreporter.com/c/tv/feed/",
+        section="culture_art",
+        max_age_days=3,
+        max_items=3,
+        priority=72,
+        include_keywords=tuple(CULTURE_KEYWORDS),
+    ),
+    FeedSource(
+        key="indiewire_film",
+        name="IndieWire Film",
+        url="https://www.indiewire.com/c/film/feed/",
+        section="culture_art",
+        max_age_days=3,
+        max_items=4,
+        priority=74,
+        include_keywords=tuple(CULTURE_KEYWORDS),
+    ),
+    FeedSource(
+        key="guardian_film",
+        name="The Guardian Film",
+        url="https://www.theguardian.com/film/rss",
+        section="culture_art",
+        max_age_days=3,
+        max_items=3,
+        priority=70,
+        include_keywords=tuple(CULTURE_KEYWORDS),
+    ),
+    FeedSource(
+        key="nme_film",
+        name="NME Film",
+        url="https://www.nme.com/film/feed",
+        section="culture_art",
+        max_age_days=3,
+        max_items=3,
+        priority=68,
+        include_keywords=tuple(CULTURE_KEYWORDS),
+    ),
+    FeedSource(
+        key="hyperallergic",
+        name="Hyperallergic",
+        url="https://hyperallergic.com/feed/",
+        section="culture_art",
+        max_age_days=3,
+        max_items=3,
+        priority=66,
         include_keywords=tuple(CULTURE_KEYWORDS),
     ),
     FeedSource(
@@ -1910,10 +2082,13 @@ def editorial_select_sections(
         "Vanso 是 AI 音乐流媒体和短音频兴趣图谱平台；Vizasound 是 AI 音乐创作平台，承载 The Aidols 和 The Aimmys。"
         "请只做精选、合并和压缩，不要写运营意义/可执行动作这类模板废话。"
         "固定保留这些栏目：头部发行、AI·产业动向、社媒热点、文化·艺术界、国际政坛、节庆预警。"
-        "国际政坛栏目选择当天重要政治新闻即可，不要求与业务强相关；如有候选，至少保留 1 条。"
+        "头部发行：如有候选，尽量保留 3-6 条。"
+        "社媒热点：如有候选，保留 3-6 条。"
+        "文化·艺术界：如有候选，保留 2-6 条。"
+        "国际政坛：如有候选，保留 3-6 条重要政治新闻，不要求与业务强相关。"
         "普通生活争议、普通明星八卦不要选，除非具备社媒传播性、创作者经济、影音联动或可借势讨论价值。"
         "每条输出一行新闻稿口吻：标题要短，summary_zh 写关键信息、时间、数据或影响点。"
-        "总条数最多 18 条；没有高质量内容的栏目可以少选。输出 JSON。"
+        "总条数最多 36 条；候选不足时栏目可以少选。输出 JSON。"
     )
     payload = {
         "items": payload_items,
@@ -1967,8 +2142,25 @@ def editorial_select_sections(
         item.cn_summary = trim_title(summary_text, 96)
         refined[section].append(item)
 
-    if not refined["politics"] and fallback.get("politics"):
-        refined["politics"].extend(fallback["politics"][: min(2, SECTION_LIMITS["politics"])])
+    for section, min_count in SECTION_MIN_COUNTS.items():
+        fallback_items = fallback.get(section, [])
+        if not fallback_items:
+            continue
+        target_count = min(min_count, SECTION_LIMITS.get(section, min_count), len(fallback_items))
+        if len(refined.get(section, [])) >= target_count:
+            continue
+        existing_keys = {
+            normalize_whitespace(item.link) or normalize_title_key(item.title)
+            for item in refined.get(section, [])
+        }
+        for item in fallback_items:
+            link_key = normalize_whitespace(item.link) or normalize_title_key(item.title)
+            if link_key in existing_keys:
+                continue
+            refined[section].append(item)
+            existing_keys.add(link_key)
+            if len(refined[section]) >= target_count:
+                break
 
     refined = enforce_report_limits(refined)
     selected_count = sum(len(items) for items in refined.values())
@@ -2119,6 +2311,27 @@ def business_relevance_score(section: str, text: str) -> tuple[float, list[str]]
         if contains_any(lowered, ("soundtrack", "film score", "composer", "music video", "concert film", "musical", "song")):
             score += 4.0
             reasons.append("影音音乐联动")
+        if contains_any(lowered, ("film", "movie", "cinema", "documentary", "animation", "anime")):
+            score += 1.4
+            reasons.append("影视内容")
+        if contains_any(lowered, ("tv", "series", "showrunner", "streaming series")):
+            score += 1.2
+            reasons.append("剧集内容")
+        if contains_any(lowered, ("horror", "sci-fi", "fantasy", "thriller", "superhero", "video game adaptation")):
+            score += 1.2
+            reasons.append("类型片/游戏改编")
+        if contains_any(lowered, ("adaptation", "prequel", "sequel", "remake", "reboot", "franchise")):
+            score += 1.2
+            reasons.append("IP 延展")
+        if contains_any(lowered, ("actor", "actress", "director", "filmmaker", "screenwriter", "producer", "cast", "auteur")):
+            score += 1.0
+            reasons.append("主创/演员动态")
+        if contains_any(lowered, ("festival", "cannes", "sundance", "venice", "berlin", "toronto", "tribeca", "sxsw", "locarno", "miffest")):
+            score += 1.4
+            reasons.append("影展/文化节")
+        if contains_any(lowered, ("art", "artist", "gallery", "museum", "exhibition", "installation", "contemporary art")):
+            score += 1.2
+            reasons.append("艺术展览")
         if contains_any(lowered, CULTURE_FUN_KEYWORDS):
             score += 2.8
             reasons.append("文化借势潜力")
