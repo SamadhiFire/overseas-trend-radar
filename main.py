@@ -1686,7 +1686,15 @@ def call_llm_json(
 
     serialized_payload = json.dumps(user_payload, ensure_ascii=False, sort_keys=True)
     cache = state.setdefault("llm_cache", {})
-    cache_key = hashlib.sha256(f"{cache_namespace}|{serialized_payload}".encode("utf-8")).hexdigest()
+    cache_basis = {
+        "namespace": cache_namespace,
+        "model": OPENAI_MODEL,
+        "system_prompt": system_prompt,
+        "payload": user_payload,
+    }
+    cache_key = hashlib.sha256(
+        json.dumps(cache_basis, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
     with TRANSLATION_CACHE_LOCK:
         if cache_key in cache:
             return cache[cache_key]
@@ -1902,7 +1910,8 @@ def editorial_select_sections(
         "Vanso 是 AI 音乐流媒体和短音频兴趣图谱平台；Vizasound 是 AI 音乐创作平台，承载 The Aidols 和 The Aimmys。"
         "请只做精选、合并和压缩，不要写运营意义/可执行动作这类模板废话。"
         "固定保留这些栏目：头部发行、AI·产业动向、社媒热点、文化·艺术界、国际政坛、节庆预警。"
-        "普通电影、普通政治、普通生活争议、普通明星八卦不要选，除非与 AI 音乐、AI 视频、音乐传播、版权分发、创作者经济或影音联动强相关。"
+        "国际政坛栏目选择当天重要政治新闻即可，不要求与业务强相关；如有候选，至少保留 1 条。"
+        "普通生活争议、普通明星八卦不要选，除非具备社媒传播性、创作者经济、影音联动或可借势讨论价值。"
         "每条输出一行新闻稿口吻：标题要短，summary_zh 写关键信息、时间、数据或影响点。"
         "总条数最多 18 条；没有高质量内容的栏目可以少选。输出 JSON。"
     )
@@ -1957,6 +1966,9 @@ def editorial_select_sections(
             summary_text = ""
         item.cn_summary = trim_title(summary_text, 96)
         refined[section].append(item)
+
+    if not refined["politics"] and fallback.get("politics"):
+        refined["politics"].extend(fallback["politics"][: min(2, SECTION_LIMITS["politics"])])
 
     refined = enforce_report_limits(refined)
     selected_count = sum(len(items) for items in refined.values())
@@ -2945,17 +2957,17 @@ def generate_action_plan(
         "holidays": serialized_holidays,
         "price_alerts": price_alerts[:2],
         "output_schema": {
-            "app_actions": ["2-3条，面向 App 内资源位/歌单/Push"],
-            "social_actions": ["2-3条，面向社媒内容和短视频"],
-            "localization_actions": ["1-2条，面向国家/语区执行"],
-            "watchouts": ["1-2条，面向风险和注意事项"],
+            "app_actions": ["1-2条字符串，每条不超过45字"],
+            "social_actions": ["1-2条字符串，每条不超过45字"],
+            "localization_actions": ["0-1条字符串，每条不超过45字"],
+            "watchouts": ["0-1条字符串，每条不超过45字"],
         },
     }
     system_prompt = (
         "你是海外音乐平台运营负责人。"
-        "请把当日资讯整理成早上 9:20 的执行清单，输出简体中文 JSON。"
-        "建议必须具体、克制、能在今天上午到今天晚上落地。"
-        "不要空话，每条建议都要体现动作和场景。"
+        "请把当日资讯整理成极简运营建议，输出简体中文 JSON。"
+        "只输出字符串数组，不要对象，不要 priority/time_window/owner/details/success_check。"
+        "每条一句话，短、直接、能执行。总建议数控制在 3 到 5 条。"
     )
     result = call_llm_json(system_prompt, payload, state, diagnostics, "action_plan")
     if not result:
@@ -2967,7 +2979,8 @@ def generate_action_plan(
         if not isinstance(raw_items, list):
             plan[key] = fallback[key]
             continue
-        cleaned = [normalize_whitespace(str(item)) for item in raw_items if normalize_whitespace(str(item))]
+        cleaned = [normalize_action_plan_text(item) for item in raw_items]
+        cleaned = [item for item in cleaned if item]
         plan[key] = cleaned[:3] or fallback[key]
     return plan
 
@@ -3017,6 +3030,25 @@ def build_top_signals(
     return [line for _, line in candidates[:3]]
 
 
+def normalize_action_plan_text(item: Any) -> str:
+    if isinstance(item, dict):
+        risk = normalize_whitespace(str(item.get("risk", "")))
+        today_action = normalize_whitespace(str(item.get("today_action", "")))
+        action = normalize_whitespace(str(item.get("action", "")))
+        if risk and today_action:
+            return trim_title(f"{risk}；{today_action}", 70)
+        if action:
+            return trim_title(action, 60)
+        for key in ("suggestion", "title", "scene"):
+            value = normalize_whitespace(str(item.get(key, "")))
+            if value:
+                return trim_title(value, 60)
+        return ""
+    if isinstance(item, list):
+        return trim_title("；".join(normalize_whitespace(str(part)) for part in item if normalize_whitespace(str(part))), 60)
+    return trim_title(normalize_whitespace(str(item)), 60)
+
+
 def action_plan_to_markdown_lines(action_plan: dict[str, list[str]]) -> list[str]:
     section_labels = [
         ("app_actions", "App内动作"),
@@ -3026,11 +3058,12 @@ def action_plan_to_markdown_lines(action_plan: dict[str, list[str]]) -> list[str
     ]
     lines: list[str] = []
     for key, label in section_labels:
-        items = action_plan.get(key, [])
+        items = [normalize_action_plan_text(item) for item in action_plan.get(key, [])]
+        items = [item for item in items if item]
         if not items:
             continue
-        lines.append(f"{label}：")
-        lines.extend(f"{index}. {item}" for index, item in enumerate(items, start=1))
+        for item in items[:2]:
+            lines.append(f"• **{label}** — {item}")
     return lines
 
 
