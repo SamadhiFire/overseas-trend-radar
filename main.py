@@ -181,6 +181,18 @@ HEAD_RELEASE_INCLUDE = [
     "pre-save",
     "presave",
     "debut",
+    "tour",
+    "tour dates",
+    "festival",
+    "lineup",
+    "live show",
+    "live performance",
+    "live debut",
+    "premiere",
+    "setlist",
+    "playlist",
+    "listening party",
+    "listening experience",
 ]
 
 HEAD_RELEASE_EXCLUDE = [
@@ -221,14 +233,28 @@ HEAD_RELEASE_MEDIA_INCLUDE = [
     "release date",
     "out now",
     "drops",
+    "drop",
     "release",
     "releases",
     "announces",
+    "announce",
     "coming",
     "debut",
     "teaser",
     "trailer",
     "pre-save",
+    "tour",
+    "tour dates",
+    "festival",
+    "lineup",
+    "live show",
+    "live performance",
+    "live debut",
+    "premiere",
+    "setlist",
+    "playlist",
+    "listening party",
+    "listening experience",
 ]
 
 HEAD_RELEASE_PRIORITY_ARTISTS = [
@@ -842,6 +868,61 @@ FEED_SOURCES = [
         max_age_days=3,
         max_items=3,
         priority=80,
+        include_keywords=tuple(HEAD_RELEASE_MEDIA_INCLUDE),
+        exclude_keywords=tuple(HEAD_RELEASE_EXCLUDE),
+    ),
+    FeedSource(
+        key="nme_music_head_release",
+        name="NME Music",
+        url="https://www.nme.com/news/music/feed",
+        section="head_releases",
+        max_age_days=3,
+        max_items=4,
+        priority=78,
+        include_keywords=tuple(HEAD_RELEASE_MEDIA_INCLUDE),
+        exclude_keywords=tuple(HEAD_RELEASE_EXCLUDE),
+    ),
+    FeedSource(
+        key="stereogum_head_release",
+        name="Stereogum",
+        url="https://www.stereogum.com/feed/",
+        section="head_releases",
+        max_age_days=3,
+        max_items=4,
+        priority=76,
+        include_keywords=tuple(HEAD_RELEASE_MEDIA_INCLUDE),
+        exclude_keywords=tuple(HEAD_RELEASE_EXCLUDE),
+    ),
+    FeedSource(
+        key="consequence_music_head_release",
+        name="Consequence Music",
+        url="https://consequence.net/category/music/feed/",
+        section="head_releases",
+        max_age_days=3,
+        max_items=4,
+        priority=74,
+        include_keywords=tuple(HEAD_RELEASE_MEDIA_INCLUDE),
+        exclude_keywords=tuple(HEAD_RELEASE_EXCLUDE),
+    ),
+    FeedSource(
+        key="brooklynvegan_head_release",
+        name="BrooklynVegan",
+        url="https://www.brooklynvegan.com/category/music/feed/",
+        section="head_releases",
+        max_age_days=3,
+        max_items=4,
+        priority=72,
+        include_keywords=tuple(HEAD_RELEASE_MEDIA_INCLUDE),
+        exclude_keywords=tuple(HEAD_RELEASE_EXCLUDE),
+    ),
+    FeedSource(
+        key="freshhiphoprnb_head_release",
+        name="FreshHipHopR&B",
+        url="https://freshhiphoprnb.com/feed/",
+        section="head_releases",
+        max_age_days=3,
+        max_items=4,
+        priority=70,
         include_keywords=tuple(HEAD_RELEASE_MEDIA_INCLUDE),
         exclude_keywords=tuple(HEAD_RELEASE_EXCLUDE),
     ),
@@ -2428,6 +2509,14 @@ def passes_business_gate(section: str, text: str, business_score: float) -> bool
 
 def infer_release_tag(text: str) -> str:
     lowered = text.lower()
+    if keyword_matches(lowered, "tour") or keyword_matches(lowered, "tour dates"):
+        return "巡演"
+    if keyword_matches(lowered, "festival") or keyword_matches(lowered, "lineup"):
+        return "音乐节"
+    if keyword_matches(lowered, "playlist") or keyword_matches(lowered, "setlist"):
+        return "歌单"
+    if keyword_matches(lowered, "live show") or keyword_matches(lowered, "live performance") or keyword_matches(lowered, "live debut") or keyword_matches(lowered, "premiere"):
+        return "现场"
     if keyword_matches(lowered, "music video") or keyword_matches(lowered, "video") or keyword_matches(lowered, "mv") or keyword_matches(lowered, "visual"):
         return "MV"
     if keyword_matches(lowered, "album") or re.search(r"\bep\b|\blp\b", lowered):
@@ -2572,8 +2661,6 @@ def filter_items_for_source(
         if source.key.endswith("_head_release") and contains_any(
             full_text,
             (
-                "tour",
-                "festival appearance",
                 "cancel concert",
                 "hospitalized",
                 "shot",
