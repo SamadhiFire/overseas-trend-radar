@@ -24,14 +24,17 @@ if (-not $ApiKey) {
     throw "Missing API key. Pass -ApiKey or set `$env:OPENAI_API_KEY, or create ignored file run_local.secrets.ps1."
 }
 
-$bundledPython = "C:\Users\AS\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
 $pythonExe = $null
-if (Test-Path $bundledPython) {
-    $pythonExe = $bundledPython
-} else {
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd) {
-        $pythonExe = $pythonCmd.Source
+# 优先使用系统 Python
+$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+if ($pythonCmd) {
+    $pythonExe = $pythonCmd.Source
+}
+# 备选：Codex 内置 Python
+if (-not $pythonExe) {
+    $bundledPython = "C:\Users\AS\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
+    if (Test-Path $bundledPython) {
+        $pythonExe = $bundledPython
     }
 }
 
