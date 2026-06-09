@@ -20,7 +20,7 @@ from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -3244,7 +3244,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_report_datetime(args: argparse.Namespace) -> datetime:
-    tz = ZoneInfo(args.timezone)
+    try:
+        tz = ZoneInfo(args.timezone)
+    except ZoneInfoNotFoundError:
+        if args.timezone == "Asia/Shanghai":
+            tz = timezone(timedelta(hours=8), name="Asia/Shanghai")
+        else:
+            raise
     if args.date:
         report_date = date.fromisoformat(args.date)
     else:

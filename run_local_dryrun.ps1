@@ -1,6 +1,6 @@
 param(
     [string]$ReportDate = "",
-    [string]$Model = "gpt5.4",
+    [string]$Model = "gpt-5.5",
     [string]$BaseUrl = "https://ai.860812.xyz",
     [string]$ApiKey = "",
     [string]$Timezone = "Asia/Shanghai"
@@ -59,6 +59,9 @@ if ($ReportDate) {
 
 Write-Host "Running local dry-run with model $Model ..." -ForegroundColor Cyan
 & $pythonExe @args
+if ($LASTEXITCODE -ne 0) {
+    throw "Local dry-run failed with exit code $LASTEXITCODE."
+}
 
 Write-Host ""
 Write-Host "Artifacts written to data/:" -ForegroundColor Green
